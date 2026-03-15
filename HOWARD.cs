@@ -1,8 +1,10 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Reflection;
 using HarmonyLib;
+using Il2CppInterop.Runtime.Injection;
 using Il2CppRUMBLE.Environment.Howard;
 using Il2CppRUMBLE.Managers;
 using Il2CppRUMBLE.Players;
@@ -37,6 +39,8 @@ namespace HowardIssue
         private GameObject _rotationPivot;
         private TextMeshPro _playerTextMesh;
         private TextMeshPro _howardTextMesh;
+        private CounterColumnEditor _playerEditor;
+        private CounterColumnEditor _howardEditor;
         private TMP_FontAsset _rumbleUiFont;
         private float _nextNameRefreshTime;
         private MelonPreferences_Category _prefsCategory;
@@ -50,6 +54,7 @@ namespace HowardIssue
             _prefsCategory = MelonPreferences.CreateCategory("HowardSkillIssue");
             _nameOverrideEntry = _prefsCategory.CreateEntry("DisplayNameOverride", "");
             _playerName = "Player";
+            ClassInjector.RegisterTypeInIl2Cpp<CounterColumnEditor>();
             LoadCounters();
             HarmonyInstance.PatchAll(typeof(HOWARD).Assembly);
         }
@@ -69,6 +74,8 @@ namespace HowardIssue
                 _rotationPivot = null;
                 _playerTextMesh = null;
                 _howardTextMesh = null;
+                _playerEditor = null;
+                _howardEditor = null;
             }
         }
 
@@ -174,6 +181,19 @@ namespace HowardIssue
             {
                 MelonLogger.Warning($"[HowardSkillIssue] Failed to get TextMeshPro for '{name}'.");
                 return null;
+            }
+            var editor = go.AddComponent<CounterColumnEditor>();
+            editor.target = textMesh;
+            editor.columnName = name;
+            editor.useCustomText = false;
+
+            if (name == "PlayerColumn")
+            {
+                _playerEditor = editor;
+            }
+            else if (name == "HowardColumn")
+            {
+                _howardEditor = editor;
             }
 
             // Center alignment so each text rotates around its own center.
@@ -305,12 +325,12 @@ namespace HowardIssue
 
             var sharedFacing = Quaternion.LookRotation(cam.transform.position - _rotationPivot.transform.position, Vector3.up) * Quaternion.Euler(0f, 180f, 0f);
 
-            if (_playerTextMesh != null)
+            if (_playerTextMesh != null && (_playerEditor == null || !_playerEditor.freezeRotation))
             {
                 _playerTextMesh.transform.rotation = sharedFacing;
             }
 
-            if (_howardTextMesh != null)
+            if (_howardTextMesh != null && (_howardEditor == null || !_howardEditor.freezeRotation))
             {
                 _howardTextMesh.transform.rotation = sharedFacing;
             }
@@ -330,12 +350,26 @@ namespace HowardIssue
         {
             if (_playerTextMesh != null)
             {
-                ((TMP_Text)_playerTextMesh).text = $"{_playerName} Deaths\n{_playerDeaths}";
+                if (_playerEditor != null && _playerEditor.useCustomText)
+                {
+                    ((TMP_Text)_playerTextMesh).text = _playerEditor.GetDisplayText();
+                }
+                else
+                {
+                    ((TMP_Text)_playerTextMesh).text = $"{_playerName} Deaths\n{_playerDeaths}";
+                }
             }
 
             if (_howardTextMesh != null)
             {
-                ((TMP_Text)_howardTextMesh).text = $"Howard Deaths\n{_howardDeaths}";
+                if (_howardEditor != null && _howardEditor.useCustomText)
+                {
+                    ((TMP_Text)_howardTextMesh).text = _howardEditor.GetDisplayText();
+                }
+                else
+                {
+                    ((TMP_Text)_howardTextMesh).text = $"Howard Deaths\n{_howardDeaths}";
+                }
             }
         }
 
@@ -710,6 +744,28 @@ namespace HowardIssue
             {
                 Instance?.OnHowardDamageEvent(__instance);
             }
+        }
+    }
+
+    public class CounterColumnEditor : MonoBehaviour
+    {
+        public TextMeshPro target;
+        public string columnName = "Column";
+        public bool useCustomText = false;
+        public string customHeader = "Header";
+        public string customValue = "0";
+        public bool freezeRotation = false;
+
+        public CounterColumnEditor(IntPtr ptr) : base(ptr) { }
+
+        public CounterColumnEditor() : base(ClassInjector.DerivedConstructorPointer<CounterColumnEditor>())
+        {
+            ClassInjector.DerivedConstructorBody(this);
+        }
+
+        public string GetDisplayText()
+        {
+            return $"{customHeader}\n{customValue}";
         }
     }
 
