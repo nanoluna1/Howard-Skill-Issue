@@ -23,6 +23,7 @@ namespace HowardIssue
         private int _playerDeaths;
         private int _howardDeaths;
         private GameObject _worldUiRoot;
+        private GameObject _rotationPivot;
         private TextMeshPro _playerTextMesh;
         private TextMeshPro _howardTextMesh;
         private TMP_FontAsset _rumbleUiFont;
@@ -48,6 +49,7 @@ namespace HowardIssue
             {
                 UnityEngine.Object.Destroy(_worldUiRoot);
                 _worldUiRoot = null;
+                _rotationPivot = null;
                 _playerTextMesh = null;
                 _howardTextMesh = null;
             }
@@ -98,6 +100,10 @@ namespace HowardIssue
             _worldUiRoot.transform.localScale = Vector3.one * 0.05f;
             UnityEngine.Object.DontDestroyOnLoad(_worldUiRoot);
 
+            _rotationPivot = new GameObject("RotationPivot");
+            _rotationPivot.transform.SetParent(_worldUiRoot.transform, false);
+            _rotationPivot.transform.localPosition = Vector3.zero;
+
             _playerTextMesh = CreateColumnText("PlayerColumn", new Vector3(-ColumnHalfGap, 0f, 0f), true);
             _howardTextMesh = CreateColumnText("HowardColumn", new Vector3(ColumnHalfGap, 0f, 0f), false);
 
@@ -114,7 +120,7 @@ namespace HowardIssue
             go.transform.SetParent(_worldUiRoot.transform, false);
             go.transform.localPosition = localOffset;
             go.transform.localRotation = Quaternion.identity;
-            go.transform.localScale = Vector3.one;
+            go.transform.localScale = new Vector3(2.5f, 2.5f, 2.5f);
 
             Il2CppSystem.Type tmpType = null;
             var tmpTypeNames = new[]
@@ -257,6 +263,8 @@ namespace HowardIssue
                 _playerTextMesh.transform.position = new Vector3(5.7545f, 1.6522f, -24.1384f);
                 _howardTextMesh.transform.position = new Vector3(13.3516f, 1.6522f, -20.4851f);
             }
+
+            UpdateRotationPivotPosition();
         }
 
         private void ApplyTextFacing(Camera cam)
@@ -266,17 +274,33 @@ namespace HowardIssue
                 return;
             }
 
+            UpdateRotationPivotPosition();
+            if (_rotationPivot == null)
+            {
+                return;
+            }
+
+            var sharedFacing = Quaternion.LookRotation(cam.transform.position - _rotationPivot.transform.position, Vector3.up) * Quaternion.Euler(0f, 180f, 0f);
+
             if (_playerTextMesh != null)
             {
-                var playerFacing = Quaternion.LookRotation(cam.transform.position - _playerTextMesh.transform.position, Vector3.up);
-                _playerTextMesh.transform.rotation = playerFacing * Quaternion.Euler(0f, 180f, 0f);
+                _playerTextMesh.transform.rotation = sharedFacing;
             }
 
             if (_howardTextMesh != null)
             {
-                var howardFacing = Quaternion.LookRotation(cam.transform.position - _howardTextMesh.transform.position, Vector3.up);
-                _howardTextMesh.transform.rotation = howardFacing * Quaternion.Euler(0f, 180f, 0f);
+                _howardTextMesh.transform.rotation = sharedFacing;
             }
+        }
+
+        private void UpdateRotationPivotPosition()
+        {
+            if (_rotationPivot == null || _playerTextMesh == null || _howardTextMesh == null)
+            {
+                return;
+            }
+
+            _rotationPivot.transform.position = (_playerTextMesh.transform.position + _howardTextMesh.transform.position) * 0.5f;
         }
 
         private void UpdateWorldText()
