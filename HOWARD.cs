@@ -1,7 +1,9 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using HarmonyLib;
+using Il2CppRUMBLE.Environment.Howard;
 using Il2CppRUMBLE.Managers;
 using Il2CppRUMBLE.Players;
 using Il2CppTMPro;
@@ -22,6 +24,15 @@ namespace HowardIssue
         private string _playerName = "Player";
         private int _playerDeaths;
         private int _howardDeaths;
+        private bool _howardFightActive;
+        private bool _howardDeathCountedThisFight;
+        private bool _playerDeathCountedThisFight;
+        private int _lastLocalPlayerHp = -1;
+        private Howard _howard;
+
+        private readonly string _saveFolder = "UserData\\HowardSkillIssue";
+        private readonly string _saveFileName = "HowardSkillIssue.txt";
+
         private GameObject _worldUiRoot;
         private GameObject _rotationPivot;
         private TextMeshPro _playerTextMesh;
@@ -39,12 +50,18 @@ namespace HowardIssue
             _prefsCategory = MelonPreferences.CreateCategory("HowardSkillIssue");
             _nameOverrideEntry = _prefsCategory.CreateEntry("DisplayNameOverride", "");
             _playerName = "Player";
+            LoadCounters();
             HarmonyInstance.PatchAll(typeof(HOWARD).Assembly);
         }
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             _currentScene = sceneName ?? "Unknown";
+            _howardFightActive = false;
+            _howardDeathCountedThisFight = false;
+            _lastLocalPlayerHp = -1;
+            _howard = null;
+
             if (_worldUiRoot != null)
             {
                 UnityEngine.Object.Destroy(_worldUiRoot);
@@ -55,9 +72,15 @@ namespace HowardIssue
             }
         }
 
+        public override void OnApplicationQuit()
+        {
+            SaveCounters();
+            base.OnApplicationQuit();
+        }
+
         public override void OnUpdate()
         {
-            if (_currentScene == "Loader")
+            if (_currentScene != "Gym")
             {
                 return;
             }
@@ -67,6 +90,8 @@ namespace HowardIssue
                 _nextNameRefreshTime = Time.unscaledTime + 2f;
                 RefreshPlayerNameFromGame();
             }
+
+            TrackPlayerDeathDuringHowardFight();
 
             if (_worldUiRoot == null)
             {
@@ -96,9 +121,7 @@ namespace HowardIssue
             }
 
             _worldUiRoot = new GameObject("HowardDeathCounterUI");
-            _worldUiRoot.hideFlags = HideFlags.HideAndDontSave;
             _worldUiRoot.transform.localScale = Vector3.one * 0.05f;
-            UnityEngine.Object.DontDestroyOnLoad(_worldUiRoot);
 
             _rotationPivot = new GameObject("RotationPivot");
             _rotationPivot.transform.SetParent(_worldUiRoot.transform, false);
@@ -316,6 +339,72 @@ namespace HowardIssue
             }
         }
 
+        private string GetSavePath()
+        {
+            return Path.Combine(_saveFolder, _saveFileName);
+        }
+
+        private void LoadCounters()
+        {
+            try
+            {
+                if (!Directory.Exists(_saveFolder))
+                {
+                    Directory.CreateDirectory(_saveFolder);
+                }
+
+                var path = GetSavePath();
+                if (!File.Exists(path))
+                {
+                    return;
+                }
+
+                var lines = File.ReadAllLines(path);
+                if (lines == null || lines.Length == 0)
+                {
+                    return;
+                }
+
+                if (lines.Length > 0 && int.TryParse(lines[0], out var loadedPlayerDeaths))
+                {
+                    _playerDeaths = Mathf.Max(0, loadedPlayerDeaths);
+                }
+
+                if (lines.Length > 1 && int.TryParse(lines[1], out var loadedHowardDeaths))
+                {
+                    _howardDeaths = Mathf.Max(0, loadedHowardDeaths);
+                }
+
+                MelonLogger.Msg($"[HowardSkillIssue] Loaded counters. Player: {_playerDeaths}, Howard: {_howardDeaths}");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[HowardSkillIssue] Failed to load counters: {ex.Message}");
+            }
+        }
+
+        private void SaveCounters()
+        {
+            try
+            {
+                if (!Directory.Exists(_saveFolder))
+                {
+                    Directory.CreateDirectory(_saveFolder);
+                }
+
+                var path = GetSavePath();
+                File.WriteAllLines(path, new[]
+                {
+                    _playerDeaths.ToString(),
+                    _howardDeaths.ToString()
+                });
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[HowardSkillIssue] Failed to save counters: {ex.Message}");
+            }
+        }
+
         private void RefreshPlayerNameFromGame()
         {
             var overrideName = _nameOverrideEntry?.Value;
@@ -462,55 +551,164 @@ namespace HowardIssue
             return hasLetterOrDigit;
         }
 
-        private void OnPlayerDeathDetected()
+        private void OnHowardFightStateChanged(int step)
         {
-            _playerDeaths++;
-            UpdateWorldText();
-            MelonLogger.Msg($"[HowardSkillIssue] Player death detected. Total: {_playerDeaths}");
+            if (step == 0)
+            {
+                _howardFightActive = true;
+                _howardDeathCountedThisFight = false;
+                _playerDeathCountedThisFight = false;
+                _lastLocalPlayerHp = TryGetLocalPlayerHp();
+                MelonLogger.Msg("[HowardSkillIssue] Howard fight started.");
+                return;
+            }
+
+            if (step == 1)
+            {
+                var hp = TryGetLocalPlayerHp();
+                var howardDied = _howardDeathCountedThisFight || (TryGetHoward()?.currentHp ?? 1) <= 0;
+                if (!howardDied && !_playerDeathCountedThisFight && (hp <= 0 || hp == -1))
+                {
+                    _playerDeathCountedThisFight = true;
+                    _playerDeaths++;
+                    SaveCounters();
+                    UpdateWorldText();
+                    MelonLogger.Msg($"[HowardSkillIssue] Player death detected at fight end. Total: {_playerDeaths}");
+                }
+
+                _howardFightActive = false;
+                _howardDeathCountedThisFight = false;
+                _playerDeathCountedThisFight = false;
+                _lastLocalPlayerHp = -1;
+                MelonLogger.Msg("[HowardSkillIssue] Howard fight ended.");
+            }
         }
 
-        private void OnHowardDeathDetected()
+        private void OnHowardDamageEvent(Howard howardFromPatch)
         {
+            if (!_howardFightActive || _howardDeathCountedThisFight)
+            {
+                return;
+            }
+
+            var howard = howardFromPatch != null ? howardFromPatch : TryGetHoward();
+            if (howard == null)
+            {
+                return;
+            }
+
+            if (howard.currentHp > 0)
+            {
+                return;
+            }
+
+            _howardDeathCountedThisFight = true;
             _howardDeaths++;
+            SaveCounters();
             UpdateWorldText();
             MelonLogger.Msg($"[HowardSkillIssue] Howard death detected. Total: {_howardDeaths}");
         }
 
-        [HarmonyPatch]
-        private static class HowardSpeedrunPlayerDeathBridge
+        private Howard TryGetHoward()
         {
-            private static MethodBase TargetMethod()
+            try
             {
-                return AccessTools.Method("HowardSpeedrun.main+Patch0:Postfix");
+                if (_howard != null)
+                {
+                    return _howard;
+                }
+
+                _howard = UnityEngine.Object.FindObjectsOfType<Howard>().FirstOrDefault();
+                return _howard;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private int TryGetLocalPlayerHp()
+        {
+            try
+            {
+                if (_playerManager == null)
+                {
+                    var managerObject = GameObject.Find("Game Instance/Initializable/PlayerManager");
+                    _playerManager = managerObject != null ? managerObject.GetComponent<PlayerManager>() : null;
+                    if (_playerManager == null)
+                    {
+                        return -1;
+                    }
+                }
+
+                var players = _playerManager.AllPlayers;
+                if (players == null || players.Count <= 0)
+                {
+                    return -1;
+                }
+
+                var player = players[0];
+                if (player == null || player.Data == null)
+                {
+                    return -1;
+                }
+
+                return player.Data.HealthPoints;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private void TrackPlayerDeathDuringHowardFight()
+        {
+            if (!_howardFightActive)
+            {
+                return;
             }
 
-            private static bool Prepare()
+            var hp = TryGetLocalPlayerHp();
+            if (hp < 0)
             {
-                return TargetMethod() != null;
+                return;
             }
 
-            private static void Postfix(int _)
+            if (_lastLocalPlayerHp < 0)
             {
-                Instance?.OnPlayerDeathDetected();
+                _lastLocalPlayerHp = hp;
+                return;
+            }
+
+            if (_lastLocalPlayerHp > 0 && hp <= 0)
+            {
+                _playerDeathCountedThisFight = true;
+                _playerDeaths++;
+                SaveCounters();
+                UpdateWorldText();
+                MelonLogger.Msg($"[HowardSkillIssue] Player death detected. Total: {_playerDeaths}");
+            }
+
+            _lastLocalPlayerHp = hp;
+        }
+
+        [HarmonyPatch]
+        [HarmonyPatch(typeof(Howard), "OnActivationLeverChanged")]
+        private static class HowardActivationLeverBridge
+        {
+            private static void Postfix(int step)
+            {
+                Instance?.OnHowardFightStateChanged(step);
             }
         }
 
         [HarmonyPatch]
-        private static class HowardSpeedrunHowardDeathBridge
+        [HarmonyPatch(typeof(Howard), "DealDamage")]
+        private static class HowardDealDamageBridge
         {
-            private static MethodBase TargetMethod()
+            private static void Postfix(Howard __instance)
             {
-                return AccessTools.Method("HowardSpeedrun.main+Patch1:Postfix");
-            }
-
-            private static bool Prepare()
-            {
-                return TargetMethod() != null;
-            }
-
-            private static void Postfix()
-            {
-                Instance?.OnHowardDeathDetected();
+                Instance?.OnHowardDamageEvent(__instance);
             }
         }
     }
